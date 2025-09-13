@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Real-time GPS Tracker (Frontend)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+  <style>
+    html,body,#map { height: 100%; margin: 0; padding: 0; }
+    .legend { background: rgba(255,255,255,0.9); padding: 8px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+
+  <script>
+    // CONFIG: change to your server WebSocket endpoint (ws://host:port/ws or wss://host:port/ws)
+    const WS_URL = 'ws://localhost:8080/ws';
+
+    const map = L.map('map').setView([20.5937, 78.9629], 5); // India center default
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+    }).addTo(map);
+
+    // marker cluster group
+    const markersCluster = L.markerClusterGroup();
+    map.addLayer(markersCluster);
+
+    // keep state per tracker
+    const trackers = {}; // id -> { marker, polyline, latlngs: [], speed }
+
+    function ensureTracker(id, latlng) {
+      if (!trackers[id]) {
+        const marker = L.marker(latlng);
+        marker.bindPopup(`<b>${id}</b>`);
+        markersCluster.addLayer(marker);
+        const polyline = L.polyline([latlng], { weight: 3, opacity: 0.8 }).addTo(map);
+        trackers[id] = { marker, polyline, latlngs: [latlng], speed: 0 };
+      }
+      return trackers[id];
+    }
+
+    function updateTracker(data) {
+      // expected { id, lat, lon, speed, timestamp }
+      const id = data.id || 'unknown';
+      const lat = Number(data.lat);
+      const lon = Number(data.lon);
+      const speed = data.speed === undefined ? 0 : Number(data.speed);
+      const ts = data.timestamp || Date.now();
+
+      const latlng = [lat, lon];
+      const tr = ensureTracker(id, latlng);
+
+      // update marker position
+      tr.marker.setLatLng(latlng);
+      tr.speed = speed;
+      tr.latlngs.push(latlng);
+
+      // update popup content
+      tr.marker.bindPopup(`<b>${id}</b><br>lat: ${lat.toFixed(6)}<br>lon: ${lon.toFixed(6)}<br>speed: ${speed.toFixed(2)} m/s<br>time: ${new Date(ts).toLocaleString()}`);
+
+      // update polyline trail (limit to last 200 points)
+      if (tr.latlngs.length > 200) tr.latlngs.shift();
+      tr.polyline.setLatLngs(tr.latlngs);
+    }
+
+    // WebSocket connection to receive live positions
+    let socket = null;
+    function connect() {
+      socket = new WebSocket(WS_URL);
+      socket.addEventListener('open', () => {
+        console.log('WS connected');
+      });
+      socket.addEventListener('message', (ev) => {
+        try {
+          const obj = JSON.parse(ev.data);
+          // server may send {"type":"position","payload":{...}}
+          if (obj.type === 'position') {
+            updateTracker(obj.payload);
+          }
+        } catch (e) {
+          console.error('invalid message', e, ev.data);
+        }
+      });
+      socket.addEventListener('close', () => {
+        console.log('WS closed, reconnecting in 2s');
+        setTimeout(connect, 2000);
+      });
+      socket.addEventListener('error', (e) => {
+        console.error('WS error', e);
+        socket.close();
+      });
+    }
+    connect();
+
+    // simple playback control: play last N seconds of data (client-side only)
+    // Note: for a full playback you need server-side storage; this client keeps only live trail.
+  </script>
+</body>
+</html>
